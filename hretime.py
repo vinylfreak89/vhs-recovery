@@ -14,16 +14,22 @@ edges are the reference points; a line may show one, both or neither:
   there is only a bound: a line with neither edge clear of the transients but bright picture at both ends sits within about
   a sample of its place;
 - a line dark at an end has no reference of its own.
-Each line gets candidate corrections from the signal only: its own start edge, its own end edge, the bound above, the median
-of the references within NEAR lines, and no correction. A best path down the field picks one per line, charging a candidate
-WEIGHT x (1 - its confidence) plus the roughness it leaves against the line above (mean |difference| per sample). Picture is
-used only to choose among those candidates, never to make one. A line moves sideways only; anything moved in from outside
-the window is black.
+Each line gets candidate corrections from the signal only: its own start edge, its own end edge, the bound above, every
+reference within CARRY lines, and no correction. A best path down the field picks one per line, charging a candidate
+WEIGHT x (1 - its confidence), how much the line's own signal contradicts it (CONTRA), the roughness it leaves against the
+line above (mean |difference| per sample), and JUMP_COST per sample of timing change from the line above beyond SLEW; a
+change over MAX_STEP is impossible. Tape timing is analog and drifts, it does not jump, except at a head switch, where the
+jump is free. The carried references let a line with no edge of its own follow the
+timing its field's references describe; without them the path could start on 'no correction' where a field's first lines
+are dark and stay there rather than pay for the jump. Picture is used only to choose among those candidates, never to make
+one. A line moves sideways only; anything moved in from outside the window is black.
 
-Measured on an off-air test tape (TBC-off pass scored against a TBC-on pass of the same stretch, README.md): picture start
-at x=4.4 and end at x=714.6 when on time; |error| p50 1.18, p90 5.23 samples (uncorrected 3.85 / 16.1); no field rougher
-than the original. Known fault: whole blocks of lines can still be offset where the picture changes brightness sharply or
-the blanking is noisy, as the roughness cost then cannot tell the candidates apart."""
+Measured on an off-air test tape (TBC-off pass against a TBC-on pass of the same stretch, README.md): picture start at
+x=4.4 and end at x=714.6 when on time. Against the version without the continuity terms: line-to-line jumps over 4 samples
+38.7 -> 0.9 per field, blocks of lines offset and back 21,788 -> 470, roughness rise p99 0.80 -> 0.19, no field of 1,674
+rougher than the original. Known fault: where a scene's picture edge does not follow the line's timing (a right-hand end
+running on past where the timing puts it), the edges mislead a whole stretch and a vertical feature is left leaning by
+several samples; only the picture over time can show that."""
 import argparse, sys
 import numpy as np
 
@@ -33,9 +39,19 @@ BLANK_MAX = 9.0                     # a blanking sample reads below this (tape b
 PIC_MIN = 14.0                      # picture beside an edge reaches this within a few samples
 TRANSIENT = (5.5, 713.5)            # an edge at or beyond these is the window's own transient: a bound, not a reference
 START, END = 4.4, 714.6             # where a line's picture starts / ends when on time (measured)
-NEAR = 8                            # lines either side whose references give the 'neighbours' candidate
+CARRY = 40                          # every reference within this many lines is a candidate for a line ('carried')
+CARRY_COST = 0.6                    # confidence cost of a carried value (a line's own edge costs 1 - its confidence)
+MERGE = 1.0                         # candidates closer than this are one
 WEIGHT = 1.0                        # confidence cost, in roughness units (0.1-1.0 measured equal; higher was worse)
 COLS = slice(60, 660)               # columns the roughness is measured over
+SLEW = 1.5                          # an analog timing error drifts at most this much from one line to the next for free
+JUMP_COST = 1.0                     # each sample of line-to-line timing change beyond SLEW costs this (roughness units)
+MAX_STEP = 6.0                      # a larger change from one line to the next is impossible (adjacent lines' own end
+                                    # edges, TBC-off pass of the test tape: step p50 0.74, p90 2.13, 2.6% over 4, false
+                                    # edges included)
+CONTRA = (0.1, 0.03, 20)            # per sample: picture where a candidate puts blanking; blanking where it puts picture
+                                    # (over the first 20 picture samples it predicts each side; dark picture reads that low)
+SWITCH_STREAK = (35, 0.15)          # a head-switch line: brighter than both neighbours by 35 codes over >= 15% of its width
 BLACK = np.tile(np.array([128, 16], np.uint8), W)
 
 def refs(y):
@@ -76,33 +92,61 @@ def shifted(y, c, fill=np.nan):
     x = np.arange(len(y)) - c; i0 = np.floor(x).astype(int); f = x - i0; ok = (i0 >= 0) & (i0 < len(y) - 1)
     o = np.full(len(y), fill, np.float32); o[ok] = y[i0[ok]] * (1 - f[ok]) + y[i0[ok] + 1] * f[ok]; return o
 
-def roughness(a, b):
-    d = np.abs(a[COLS] - b[COLS]); n = np.isfinite(d).sum()
-    return float(np.nanmean(d)) if n > 200 else 20.0
+def switch_lines(Y):
+    """per line: may its timing jump from the line above? True into and out of a thin bright streak (a head switch)"""
+    up = Y[1:-1] - Y[:-2]; dn = Y[1:-1] - Y[2:]
+    frac = ((up > SWITCH_STREAK[0]) & (dn > SWITCH_STREAK[0]))[:, 20:700].mean(1)
+    sw = np.zeros(len(Y), bool); hit = np.nonzero(frac >= SWITCH_STREAK[1])[0] + 1
+    for i in hit: sw[i:i + 2] = True                        # into and out of the streak line: one discontinuity, so no
+                                                            # free way out and back (a block) around it
+    return sw
+
+def roughness_matrix(A, B):
+    """A: rows (Ka x 720), B: rows (Kb x 720), NaN outside the window -> Ka x Kb mean |difference| per sample
+    (20 where they barely overlap)"""
+    a = A[:, COLS][:, ::2]; b = B[:, COLS][:, ::2]                  # every other column: a mean, not a match
+    d = np.abs(a[:, None, :] - b[None, :, :]); n = np.isfinite(d).sum(2)
+    m = np.nansum(d, 2) / np.maximum(n, 1)
+    return np.where(n > 100, m, 20.0)
+
+def contradiction(y, vals):
+    """y: one line's luma; vals: candidate corrections -> how much the line's own signal contradicts each"""
+    r = np.convolve(y.astype(np.float32), np.ones(3) / 3, 'same')
+    lo, hi = 3, W - 3                                               # inside the window's edge transients
+    pic = np.concatenate([[0], np.cumsum(r > PIC_MIN)]); blank = np.concatenate([[0], np.cumsum(r < BLANK_MAX)])
+    def count(cum, a, b):
+        a = np.clip(a, lo, hi); b = np.clip(b, lo, hi); return np.where(b > a, cum[b] - cum[a], 0)
+    s = START - vals; e = END - vals; span = CONTRA[2]
+    strong = count(pic, lo, np.floor(s).astype(int) - 1) + count(pic, np.ceil(e).astype(int) + 2, hi)
+    weak = (count(blank, np.ceil(s).astype(int) + 2, np.ceil(s).astype(int) + 2 + span)
+            + count(blank, np.floor(e).astype(int) - 1 - span, np.floor(e).astype(int) - 1))
+    return CONTRA[0] * strong + CONTRA[1] * weak
 
 def choose(Y):
     """Y: luma of LINES (len(LINES) x 720) -> per-line correction and its source"""
+    sw = switch_lines(Y)
     own = [own_candidates(Y[i], refs(Y[i])) for i in range(len(Y))]
     cand = []
     for i in range(len(Y)):
-        near = [v for j in range(max(0, i - NEAR), min(len(Y), i + NEAR + 1)) for v, _, _ in own[j]]
-        c = list(own[i])
-        if near: c.append((float(np.median(near)), 0.6, 'neighbours'))
-        c.append((0.0, 0.9, 'none'))
+        c = list(own[i]) + [(0.0, 0.9, 'none')]
+        c += [(v, CARRY_COST, 'carried') for j in range(max(0, i - CARRY), min(len(Y), i + CARRY + 1)) if j != i
+              for v, _, _ in own[j]]
         merged = []
         for v, k, src in sorted(c):
-            if merged and abs(v - merged[-1][0]) < 0.75:
+            if merged and abs(v - merged[-1][0]) < MERGE:
                 if k < merged[-1][1]: merged[-1] = (merged[-1][0], k, src)
             else: merged.append((v, k, src))
-        cand.append(merged)
-    rows = [[shifted(Y[i], v) for v, _, _ in cand[i]] for i in range(len(Y))]
-    cost = np.array([WEIGHT * k for _, k, _ in cand[0]]); back = [None]
+        con = contradiction(Y[i], np.array([v for v, _, _ in merged]))
+        cand.append([(v, k + q, src) for (v, k, src), q in zip(merged, con)])
+    vals = [np.array([v for v, _, _ in c]) for c in cand]
+    rows = [np.array([shifted(Y[i], v) for v in vals[i]]) for i in range(len(Y))]
+    cost = WEIGHT * np.array([k for _, k, _ in cand[0]]); back = [None]
     for i in range(1, len(Y)):
-        cur = np.empty(len(cand[i])); bp = np.empty(len(cand[i]), int)
-        for a in range(len(cand[i])):
-            t = [cost[b] + roughness(rows[i][a], rows[i - 1][b]) for b in range(len(cand[i - 1]))]
-            bp[a] = int(np.argmin(t)); cur[a] = t[bp[a]] + WEIGHT * cand[i][a][1]
-        cost = cur; back.append(bp)
+        jump = np.abs(vals[i][:, None] - vals[i - 1][None, :])
+        t = cost[None, :] + roughness_matrix(rows[i], rows[i - 1]) \
+            + (0.0 if sw[i] else JUMP_COST * np.maximum(0.0, jump - SLEW) + np.where(jump > MAX_STEP, 1e9, 0.0))
+        bp = np.argmin(t, 1); cost = t[np.arange(len(bp)), bp] + WEIGHT * np.array([k for _, k, _ in cand[i]])
+        back.append(bp)
     k = int(np.argmin(cost)); out = [None] * len(Y)
     for i in range(len(Y) - 1, -1, -1):
         out[i] = (cand[i][k][0], cand[i][k][2])
@@ -126,8 +170,10 @@ def field(f, n, log=None):
     return out
 
 def main():
+    global JUMP_COST
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0]); ap.add_argument('--log')
-    a = ap.parse_args()
+    ap.add_argument('--jump-cost', type=float, default=JUMP_COST)
+    a = ap.parse_args(); JUMP_COST = a.jump_cost
     log = open(a.log, 'w') if a.log else None
     if log: log.write('field,line,correction,source\n')
     inp = sys.stdin.buffer; out = sys.stdout.buffer; n = 0

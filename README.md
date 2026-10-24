@@ -89,23 +89,41 @@ python3 recovery/tests/test_hretime.py
   Blanking reads far below the darkest picture, so it is found by level, and its edge is the line's reference point.
 - **Bounds, not values, at the window ends.** The first 2-3 and last 3 samples of every window read dark whatever the
   timing. A line with bright picture at both ends and no edge clear of those samples is within about a sample of its place.
-- **Choosing.** Each line gets candidates from the signal only: its own start edge, its own end edge, that bound, the median
-  of nearby lines' references, no correction. A best path down the field picks one per line by its confidence plus the
-  roughness it leaves against the line above. Picture only chooses among candidates; it never makes one.
+- **Choosing.** Each line gets candidates from the signal only: its own start edge, its own end edge, that bound, every
+  reference within 40 lines, no correction. A best path down the field picks one per line by its confidence, how much the
+  line's own signal contradicts it (picture where it puts blanking, blanking where it puts picture), and the roughness it
+  leaves against the line above. Picture only chooses among candidates; it never makes one.
+- **Timing is analog.** It drifts from line to line; it does not jump. Changes up to 1.5 samples are free, larger ones cost,
+  and over 6 samples are impossible, except into and out of a head-switch streak. On the TBC-off pass, adjacent lines' own
+  end edges step p50 0.74, p90 2.13 samples. Without this, blocks of lines sat on false edges (the ghost, dark picture).
+  A line with no edge of its own takes a value carried from its field's references: otherwise a field whose first lines
+  are dark started on 'no correction' and stayed there rather than pay for the jump.
 
 Calibrated on two passes of an off-air test tape, deck line TBC off (the errors) and on (where lines belong):
 
 | | Error vs the TBC pass (median / 90th pct, samples) |
 |---|---|
 | No correction | 3.85 / 16.1 |
-| hretime | 1.18 / 5.23 |
+| Without the continuity terms | 1.18 / 5.23 |
+| hretime | 1.55 / 7.65 |
 
-No field came out rougher than the original. On that tape the error is a pure sideways shift per line (no stretch within a
+| | Without the continuity terms | hretime |
+|---|---|---|
+| Line-to-line jumps over 4 samples, per field | 38.7 | 0.9 |
+| Blocks of lines offset and back | 21,788 | 470 |
+| Roughness rise over the original, p99 | 0.80 | 0.19 |
+
+No field of 1,674 came out rougher than the original. The TBC pass is a diagnostic with artifacts of its own: its median
+rose while the blocks went, and in the fields checked by eye the larger remaining disagreements were the TBC pass
+mismatching dark, noisy fields. Its line-to-line steps exceed 4 samples on 8% of line pairs, where the signal's own end
+edges do on 2.6%. On that tape the error is a pure sideways shift per line (no stretch within a
 line), and the tape's antenna ghost fakes end-of-picture edges ~14 samples early, which only the choosing step can reject.
 
-**Known fault:** whole blocks of lines can still be offset where the picture changes brightness sharply or the blanking is
-noisy. Roughness alone cannot tell the candidates apart there. A real timing error is analog and does not jump between
-neighbouring lines (except at a head switch), and the choosing step does not yet use that.
+**Known fault:** a picture edge that does not follow the line's timing misleads a whole stretch. In one passage of the
+test tape, the picture's right end runs on 3-13 samples past where its timing puts it. The tool follows those ends and
+leaves a vertical bar leaning 8.7 samples over 210 lines, where the TBC pass holds it straight (0.7). No single line can
+show this; tracking the picture over time can, since the timing error changes from field to field and a wrong correction
+makes a still feature wobble.
 
 ## License
 

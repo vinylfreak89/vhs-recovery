@@ -4,7 +4,8 @@
 A smooth, vertically coherent picture 710.2 samples wide sits on blanking (code 2); on time it starts at x=4.4. Each line's
 timing drifts slowly down the field (an analog error, +-18 samples), so a late line shows its blanking at the left of the
 720-sample window and an early one at the right; the window's own first 3 and last 3 samples read dark whatever the timing.
-Some lines are dark at both ends and carry no reference of their own.
+Some lines are dark at both ends and carry no reference of their own, including the first 20 lines of a field 30 samples
+late.
 Checks: one frame out per frame in; lines that show an edge come back within 1.5 samples (90%) with median error under 1;
 lines with no reference stay within 10; no field comes out rougher than it went in; chroma moves with luma; a frame cut
 short is refused."""
@@ -33,19 +34,22 @@ def line(src, late, dark_ends=False):
     y[:3] = 2; y[-3:] = 2
     return y
 
-def make_field(seed_drift, dark_every=0):
+def make_field(seed_drift, dark_every=0, offset=0.0, dark_top=0):
     n = len(H.LINES); pic = picture(n)
-    drift = np.cumsum(rng.normal(0, 0.25, n)); drift = 18 * drift / max(1e-6, np.abs(drift).max()) * seed_drift
+    drift = np.cumsum(rng.normal(0, 0.25, n)); drift = 18 * drift / max(1e-6, np.abs(drift).max()) * seed_drift + offset
     rows = np.empty((240, W * 2), np.uint8); rows[:] = H.BLACK; truth = np.zeros(n); dark = np.zeros(n, bool)
     for i in range(n):
-        de = dark_every and i % dark_every == 0
+        de = bool(dark_every and i % dark_every == 0) or i < dark_top
         y = line(pic[i], drift[i], de)
         r = np.empty(W * 2, np.uint8); yy = np.clip(np.rint(y), 0, 255); r[1::2] = yy
         r[0::4] = np.clip(128 + (yy[0::2] - 110) / 3, 0, 255); r[2::4] = 100      # Cb follows the picture: it must move with it
         rows[H.LINES[i] - H.FIRST] = r; truth[i] = -drift[i]; dark[i] = de
     return rows, truth, dark
 
-fields = [make_field(s, d) for s, d in ((1, 0), (-1, 0), (0.6, 7), (-0.8, 5))]
+# the last field is 30 samples late throughout and its first 20 lines show no edge: they must follow the lines below, not
+# start on 'no correction' and stay there because leaving it costs a jump
+fields = [make_field(s, d, o, t) for s, d, o, t in ((1, 0, 0, 0), (-1, 0, 0, 0), (0.6, 7, 0, 0), (-0.8, 5, 0, 0),
+                                                    (0.3, 0, 0, 0), (0.3, 0, 30, 20))]
 frames = b''.join(np.stack([fields[i][0], fields[i + 1][0]], 1).reshape(480, W * 2).tobytes() for i in range(0, len(fields), 2))
 r = subprocess.run([sys.executable, TOOL, '--log', '/dev/stderr'], input=frames, capture_output=True)
 assert r.returncode == 0, r.stderr.decode()[-500:]

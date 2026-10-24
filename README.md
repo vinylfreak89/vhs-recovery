@@ -145,6 +145,9 @@ python3 recovery/tests/test_deghost.py
 - **Self-calibrating.** The measurement subtracts its estimate from the lines it measured, re-measures what is left at the
   same edges and adds that in, three times. The subtraction smears the echo by each edge's own width, so the kernel ends
   up larger than the echo it removes.
+- **Blanking left alone.** On the test tape the blanking reaching in from a line's ends is quiet (std 0.5) and carries no
+  trace of the echo; it was wiped before the tape reached the Shuttle. Subtracting an echo there wrote a copy of the
+  picture's detail into it, ahead of every edge, which is where hretime reads its references.
 - **Not the inserts.** Lines 20-21 carry the Shuttle's caption insert, a device-made waveform full of clean edges. Counted
   in, they outnumbered the picture's edges and the measured echo vanished.
 

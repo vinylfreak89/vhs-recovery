@@ -7,7 +7,7 @@ test's own formula, not the tool's). Lines 20-21 carry a clean square wave with 
 Checks: the measured echo (the edges as found, before any subtraction) peaks where and as high as it was made, unswayed
 by the insert lines; the filtered picture's
 pulse (departure from a clean edge ahead of it) is under 0.05 of a step either way while edges stay put; spikes and thin
-lines leave no wash ahead of them (their rise and fall echoes cancel); chroma and lines 20-21 / 258-259 pass through unchanged;
+lines leave no wash ahead of them (their rise and fall echoes cancel); blanking at a line's end is left as it was; chroma and lines 20-21 / 258-259 pass through unchanged;
 an echo file resting on too few edges, a measurement whose only edges are on the insert lines, and a truncated frame
 are refused."""
 import os, subprocess, sys, tempfile
@@ -80,6 +80,11 @@ for amp, w in ((40, 1), (-40, 1), (80, 1), (100, 3), (-60, 6)):
     wash = dv[330:360].mean()
     assert abs(wash) < 1.5, ('wash ahead of a %d-sample line of %+d' % (w, amp), wash)
 print('no wash ahead of spikes and thin lines')
+
+# blanking reaching in from the window's start, ahead of a bright edge with detail: left as it was (it carries no echo)
+y = np.full((1, W), 1.5) + rng.normal(0, 0.5, (1, W)); y[0, 50:] = 150 + rng.normal(0, 8, W - 50)
+assert np.array_equal(D.deghost_luma(y, e['Er'], e['Ef'])[0, :48], y[0, :48].astype(np.float32)), 'blanking changed'
+print('blanking ahead of an edge unchanged')
 
 thin = os.path.join(tmp, 'thin.npz'); np.savez(thin, Er=e['Er'], Ef=e['Ef'], n_rise=10, n_fall=10)
 r = subprocess.run([sys.executable, TOOL, '--echo', thin], input=frames[:D.FRAME], capture_output=True)

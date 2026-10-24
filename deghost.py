@@ -28,6 +28,7 @@ K = 30                              # profile half-width, samples
 FLAT = (14, 24)                     # plateau each side of an edge, samples from it (std below FLAT_SD)
 FLAT_SD = 4.0
 MIN_STEP = 40.0                     # an edge's plateaus differ by at least this (codes)
+BLANK_MAX = 9.0                     # blanking reads below this (as hretime.py)
 AHEAD = (-16, -2)                   # where the echo is taken from, relative to the edge
 MIN_EDGES = 200                     # edges of each direction an echo file needs
 ITERS = 3                           # passes solving the subtraction against the corrected line
@@ -89,9 +90,22 @@ def echo(X, Er, Ef):
         out += Er[j] * up[:, -tau:-tau + n] + Ef[j] * dn[:, -tau:-tau + n] + El[j] * sm[:, -tau:-tau + n]
     return out
 
+def blanking(Y):
+    """per row, the samples to leave alone: the window's edge transients and the blanking runs reaching in from either end
+    (3-sample level under BLANK_MAX). On the test tape blanking is quiet (std 0.5) with no trace of the echo, wiped
+    upstream; subtracting an echo there would write a copy of the picture's detail into it"""
+    r = smooth(Y); keep = np.zeros(Y.shape, bool); keep[:, :3] = True; keep[:, -3:] = True
+    low = r < BLANK_MAX
+    left = np.where(low[:, 1:].all(1), W, np.argmin(low[:, 1:], 1) + 1)              # first non-blanking sample from x=1
+    right = np.where(low[:, :-1].all(1), 0, W - 1 - np.argmin(low[:, :-1][:, ::-1], 1))   # last non-blanking sample to x=718
+    x = np.arange(W)
+    keep |= (x[None, :] < left[:, None]) & low[:, 1:2]                                 # only when the run starts at x=1
+    keep |= (x[None, :] > right[:, None]) & low[:, -2:-1]
+    return keep
+
 def deghost_luma(Y, Er, Ef):
-    Y = Y.astype(np.float32); X = Y.copy()
-    for _ in range(ITERS): X = Y - echo(X, Er, Ef)
+    Y = Y.astype(np.float32); X = Y.copy(); keep = blanking(Y)
+    for _ in range(ITERS): X = np.where(keep, Y, Y - echo(X, Er, Ef))
     return X
 
 def frames(inp):

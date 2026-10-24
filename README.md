@@ -125,6 +125,42 @@ leaves a vertical bar leaning 8.7 samples over 210 lines, where the TBC pass hol
 show this; tracking the picture over time can, since the timing error changes from field to field and a wrong correction
 makes a still feature wobble.
 
+## deghost: the echo carried ahead of luma edges (prototype)
+
+`deghost.py` measures a tape's ghost from the tape itself, then subtracts it. It uses the same frame format as the other
+tools and works on the luma of lines 22-257; chroma and the Shuttle's insert lines pass through.
+
+```
+python3 recovery/deghost.py --measure echo.npz < frames
+python3 recovery/deghost.py --echo echo.npz < frames > frames
+python3 recovery/tests/test_deghost.py
+```
+
+- **What it measures.** Sharp picture edges with flat picture 14-24 samples either side, so an echo between them is kept.
+  It takes the median profile, normalised to the step, against a clean edge of the same steepness.
+- **Rising and falling edges separately.** On the test tape a rising edge drags twice the echo of a falling one, which no
+  single linear filter can undo. Each such edge (steep, between plateaus) gets the echo of its own direction, scaled by its
+  size. Everything finer, noise, spikes and thin lines, gets the mean of the two, linearly: a spike is a rise and a fall
+  together, and with direction-dependent echoes the two did not cancel, leaving a dark wash ahead of every grain of noise.
+- **Self-calibrating.** The measurement subtracts its estimate from the lines it measured, re-measures what is left at the
+  same edges and adds that in, three times. The subtraction smears the echo by each edge's own width, so the kernel ends
+  up larger than the echo it removes.
+- **Not the inserts.** Lines 20-21 carry the Shuttle's caption insert, a device-made waveform full of clean edges. Counted
+  in, they outnumbered the picture's edges and the measured echo vanished.
+
+On the off-air test tape's TBC-off pass, the pulse peaks 8 samples (0.59 µs) ahead of each edge:
+
+| | Rising edges | Falling edges |
+|---|---|---|
+| Echo, fraction of the step | 0.252 | 0.147 |
+| After deghost, same edges | 0.028 | 0.019 |
+
+Edges stay where they were. Noise in flat picture fell from 8.26 to 6.46 codes with the mean level unchanged: for fine
+detail the subtraction is a linear filter that lowers the band the echo raised, and noise added after the ghost (tape,
+playback) is lowered with it. Whether picture detail in that band suffers has to be judged in the picture. The echo also
+depends on picture level (falls into near-black carried 0.12, falls into grey 0.31), which is not modelled, and only
+luma is corrected, so the colour keeps its own ghost.
+
 ## License
 
 GPL-2.0-or-later, as blackmagic-usb-mac.

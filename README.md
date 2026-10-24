@@ -74,6 +74,39 @@ corrections: a marker the prototype read from repeated rows, and a relock it too
 - The marker here is a broadcast test line in the vertical interval. A recording without one (a home camcorder tape, say)
   needs another landmark: the blanking interval's start, or the half line ending the field.
 
+## hretime: horizontal timing from each line's own blanking (prototype)
+
+`hretime.py` is a filter in the same frame format as `vstab.py` (720x480 UYVY, fields from line 20 / 282). It moves each
+line sideways to where its own horizontal blanking says it belongs.
+
+```
+python3 recovery/hretime.py [--log FILE] < frames > frames
+python3 recovery/tests/test_hretime.py
+```
+
+- **The signal view.** The tape signal is one waveform in time, and the Shuttle keeps 720 of every 858 samples of each line.
+  A line whose timing slipped shows a piece of its blanking inside the window: at the left if late, at the right if early.
+  Blanking reads far below the darkest picture, so it is found by level, and its edge is the line's reference point.
+- **Bounds, not values, at the window ends.** The first 2-3 and last 3 samples of every window read dark whatever the
+  timing. A line with bright picture at both ends and no edge clear of those samples is within about a sample of its place.
+- **Choosing.** Each line gets candidates from the signal only: its own start edge, its own end edge, that bound, the median
+  of nearby lines' references, no correction. A best path down the field picks one per line by its confidence plus the
+  roughness it leaves against the line above. Picture only chooses among candidates; it never makes one.
+
+Calibrated on two passes of an off-air test tape, deck line TBC off (the errors) and on (where lines belong):
+
+| | Error vs the TBC pass (median / 90th pct, samples) |
+|---|---|
+| No correction | 3.85 / 16.1 |
+| hretime | 1.18 / 5.23 |
+
+No field came out rougher than the original. On that tape the error is a pure sideways shift per line (no stretch within a
+line), and the tape's antenna ghost fakes end-of-picture edges ~14 samples early, which only the choosing step can reject.
+
+**Known fault:** whole blocks of lines can still be offset where the picture changes brightness sharply or the blanking is
+noisy. Roughness alone cannot tell the candidates apart there. A real timing error is analog and does not jump between
+neighbouring lines (except at a head switch), and the choosing step does not yet use that.
+
 ## License
 
 GPL-2.0-or-later, as blackmagic-usb-mac.

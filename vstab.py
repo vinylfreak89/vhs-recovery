@@ -108,22 +108,31 @@ def wrap(m):
 
 def near(dets, p): return min(min(abs(x - p), abs(x - p + 262.5), abs(x - p - 262.5)) for x in dets)
 
-RANK = dict(relock=0, marker=1, cont=2, cut=3)   # undecided after PENDING passes with equal misses: the likelier story first
-                                                  # (a seen marker over a measured shift: in a dark scene the shift undershoots)
+RANK = dict(relock=0, cont=1, marker=2, cut=3)   # undecided after PENDING passes with equal scores: the likelier story first
+
+def seeable(m, fresh):
+    """the detector could see a marker at slot m in this pass: in its range, with it and its blanking delivered fresh"""
+    if not VISIBLE[0] <= m <= VISIBLE[1]: return False
+    k = int(round(m)) - 20
+    return bool(fresh[max(0, k - DARK_RUN):k + 1].all())
 
 class Tracker:
     """The slot of the tape's marker line in each fresh pass. Two events read alike at the pass where they happen and differ
-    later, so both readings are carried until the next visible marker decides (or PENDING passes, after which the reading
-    whose predicted markers went unseen fewer times wins; on a tie, RANK):
+    later, so both readings are carried until a pass tells them apart:
     - a pass whose picture matches the last one poorly, or moved by neither a still nor a rolling step: a cut in the
       programme ('cut') or the synchroniser re-catching sync ('relock');
-    - while rolling, a marker far from the tracked slot: the marker ('marker') or dark picture that looks like blanking
-      ('cont'). Only while the picture rolls: holding still, the synchroniser is locked and the tape's marker is hidden, so
-      a marker seen then is dark picture and is not followed (counted in .ignored); so is one on a pass with no measured
-      shift (the first).
+    - while rolling, a marker far from the tracked slot: the marker ('marker') or dark picture that looks like blanking,
+      the tape's marker being hidden ('cont'). Only while the picture rolls: holding still, the synchroniser is locked and
+      the tape's marker is hidden, so a marker seen then is dark picture and is not followed (counted in .ignored); so is
+      one on a pass with no measured shift (the first).
+    In each pass a reading scores a hit when a marker is seen where it puts one, a miss when it puts one where the detector
+    could see it and none is there. A pass decides when one reading hits and the other misses, or when both hit (dark
+    picture that rolls with the picture and the marker are both seen: 'cont', the reading the picture's motion carried).
+    Undecided after PENDING passes, hits minus misses decides, then RANK.
     observe() returns (marker slot, reading) for every pass it has settled, in order."""
     def __init__(self): self.m = float(MARK_LINE); self.kind = 'lock'; self.errs = []; self.fork = None; self.ignored = 0
-    def observe(self, d, err, dets):
+    def rolling(self): return self.kind in ('roll', 'mark') or (self.fork is not None and any(h['kind'] in ('roll', 'mark') for h in self.fork))
+    def observe(self, d, err, dets, fresh):
         med = float(np.median(self.errs[-ERR_WINDOW:])) if self.errs else None
         if err is not None: self.errs.append(err)
         if d is None: kind = 'unk'
@@ -141,31 +150,37 @@ class Tracker:
                 if near([c], p) <= FAR: p, kind = c, 'mark'
                 elif kind != 'roll': self.ignored += 1        # still, or no shift to go by (the first pass)
                 else:
-                    self.fork = [dict(m=c, kind='mark', out=[(c, 'mark/marker')], miss=0, name='marker'),
-                                 dict(m=p, kind=kind, out=[(p, kind + '/cont')], miss=0, name='cont')]
+                    hidden = not seeable(p, fresh)
+                    self.fork = [dict(m=c, kind='mark', out=[(c, 'mark/marker')], hit=1, miss=0, name='marker'),
+                                 dict(m=p, kind=kind, out=[(p, kind + '/cont')], hit=0, miss=0 if hidden else 1, name='cont')]
+                    if not hidden: return done + self.settle(self.fork[0])   # the tracked slot was in view and empty
                     return done
             self.m, self.kind = p, kind; return done + [(p, kind)]
         if self.fork is None:
             cont = 'roll' if d is not None and ROLL_WIDE[0] <= d <= ROLL_WIDE[1] else ('still' if d is not None and abs(d) <= LOCK_SHIFT else 'unk')
-            self.fork = [dict(m=self.m, kind=self.kind, out=[], miss=0, first=cont, name='cut'),
-                         dict(m=self.m, kind=self.kind, out=[], miss=0, first='relock', name='relock')]
+            self.fork = [dict(m=self.m, kind=self.kind, out=[], hit=0, miss=0, first=cont, name='cut'),
+                         dict(m=self.m, kind=self.kind, out=[], hit=0, miss=0, first='relock', name='relock')]
+        res = []
         for h in self.fork:
             k = h.pop('first', None) or ('roll' if kind == 'suspect' and h['kind'] in ('roll', 'mark') else
                                           ('still' if kind == 'suspect' else kind))
             h['m'] = advance(h['m'], h['kind'], k, d); h['kind'] = k
-            if not dets and VISIBLE[0] <= h['m'] <= VISIBLE[1]: h['miss'] += 1
+            hit = bool(dets) and near(dets, h['m']) <= FAR
+            miss = not hit and seeable(h['m'], fresh)
+            h['hit'] += hit; h['miss'] += miss; res.append((hit, miss))
+            if hit: h['m'] = float(min(dets, key=lambda x: near([x], h['m']))); h['kind'] = 'mark'; k = 'mark'
             h['out'].append((h['m'], k + '/' + h['name']))
-        if dets: win = min(self.fork, key=lambda h: (near(dets, h['m']), RANK[h['name']]))
-        elif len(self.fork[0]['out']) >= PENDING: win = min(self.fork, key=lambda h: (h['miss'], RANK[h['name']]))
+        (h0, m0), (h1, m1) = res
+        if h0 and h1: win = min(self.fork, key=lambda h: RANK[h['name']])
+        elif (h0 and m1) or (h1 and m0): win = self.fork[0] if h0 else self.fork[1]
+        elif len(self.fork[0]['out']) >= PENDING: win = self.best()
         else: return done
-        out = done + win['out']
-        if dets:
-            p = float(min(dets, key=lambda x: near([x], win['m']))); out[-1] = (p, 'mark/' + win['name']); win['m'] = p; win['kind'] = 'mark'
-        self.m, self.kind, self.fork = win['m'], win['kind'], None; return out
+        return done + self.settle(win)
+    def best(self): return min(self.fork, key=lambda h: (h['miss'] - h['hit'], RANK[h['name']]))
+    def settle(self, win):
+        self.m, self.kind, self.fork = win['m'], win['kind'], None; return win['out']
     def flush(self):
-        if self.fork is None: return []
-        win = min(self.fork, key=lambda h: (h['miss'], RANK[h['name']])); self.fork = None; self.m, self.kind = win['m'], win['kind']
-        return win['out']
+        return [] if self.fork is None else self.settle(self.best())
 
 def rotate(field, fresh, m, parity):
     """the tape's field from one pass: slot s goes to line s - (m - 16); slots above the marker belong to the previous tape
@@ -189,7 +204,10 @@ class Stabiliser:
     def field(self, f, parity):
         """f: 240 UYVY rows (slots 20..259)"""
         rows = f[:len(VIS)]
-        stale, whole = (np.zeros(len(VIS), bool), False) if self.prev is None else stale_rows(rows, self.prev[:len(VIS)])
+        # the synchroniser repeats while rolling (its writes slower than its reads); locked, a field that matches the last is
+        # a still picture, and shown as it is either way
+        none = (np.zeros(len(VIS), bool), False)
+        stale, whole = none if self.prev is None or not self.tr.rolling() else stale_rows(rows, self.prev[:len(VIS)])
         self.prev = f; ns = int(stale.sum()); e = dict(n=self.n, parity=parity, ns=ns, d=None, err=None, dets=[]); self.n += 1
         self.q.append(e)
         if self.prev_luma is not None and whole: e['state'] = 'repeat'; return
@@ -197,7 +215,7 @@ class Stabiliser:
         e.update(state='partial' if ns else 'fresh', f=f, fresh=~stale, dets=markers(f, ~stale))
         if self.prev_luma is not None: e['d'], e['err'], _ = shift(self.prev_luma, L)
         self.prev_luma = L; self.wait.append(e)
-        self.settle(self.tr.observe(e['d'], e['err'], e['dets']))
+        self.settle(self.tr.observe(e['d'], e['err'], e['dets'], ~stale))
     def settle(self, got):
         for m, reading in got: e = self.wait.pop(0); e['m'] = m; e['reading'] = reading
         while self.q and (self.q[0]['state'] == 'repeat' or 'm' in self.q[0]):

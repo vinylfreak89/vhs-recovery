@@ -32,9 +32,11 @@ python3 recovery/tests/test_vstab.py              # known-answer tests on a simu
 
 ### How vstab follows it
 
-- **Repeats:** a repeat runs from the row where the synchroniser's read caught its write down to the bottom of the field.
-  It is judged on textured rows only, since a flat row (sky, a wall, a fade) matches the previous field within noise either
-  way. Repeated fields repeat the output; repeated rows of a partly new field show black.
+- **Repeats:** the synchroniser repeats while rolling, its writes being slower than its reads. A repeat runs from the row
+  where its read caught its write down to the bottom of the field. It is judged on textured rows only, since a flat row
+  (sky, a wall, a fade) matches the previous field within noise either way. Repeated fields repeat the output; repeated
+  rows of a partly new field show black. While locked, a field that matches the last is a still picture and is shown as
+  it is.
 - **The marker:** at least 10 rows at blanking level (mean under 10, median deviation under 6), then a brighter row, all in
   rows this pass delivered. Where it is visible it decides the position, exactly.
 - **Elsewhere:** the position follows the measured shift of the picture between passes: still, rolling, or a jump when the
@@ -43,14 +45,18 @@ python3 recovery/tests/test_vstab.py              # known-answer tests on a simu
   - A pass that matches its predecessor poorly: a cut in the programme or a relock.
   - While rolling, a marker far from the tracked position: the marker, or dark picture.
 
-  Both readings are carried until the next visible marker decides. After 24 passes without one, the reading whose
-  predicted markers went unseen fewer times wins; on a tie, relock first, then the seen marker. (In a dark scene the
-  measured shift undershoots, while detected markers have proved reliable.)
+  Both readings are carried until a pass tells them apart. In each pass a reading scores a hit when a marker is seen
+  where it puts one, and a miss when it puts one where the detector could see it (in range, its rows delivered) and none
+  is there. A pass decides when one reading hits and the other misses, or when both hit: then it is the reading the
+  picture's motion carried, since dark picture rolling with the picture is seen as well as the marker. After 24
+  undecided passes, hits minus misses decides; on a tie relock, then the carried reading.
+  - In a dark scene the measured shift undershoots: a marker seen where the shift's reading is hidden is held, and wins
+    on its hit when no further marker shows.
 - **While the picture holds still:** the synchroniser is locked and the tape's marker is hidden, so a "marker" seen then is
   dark picture and is not followed.
 - Measured on luma; chroma moves with its row.
 
-On the capture it was built from, the result differs from the hand-checked prototype in 2 of 1,630 new fields, both
+On the capture it was built from, the placement differs from the hand-checked prototype in 2 of 1,630 new fields, both
 corrections: a marker the prototype read from repeated rows, and a relock it took for a still picture.
 
 ### Limits
@@ -59,7 +65,9 @@ corrections: a marker the prototype read from repeated rows, and a relock it too
 - Where the marker is hidden, a pass moves 27.5 lines and the half line is not observable: the position is good to a line.
 - Each output field joins the tape's field with the end of the previous one across the missing band. The part below the band
   can sit a line off, as that field's parity is not known.
-- Dark picture at blanking level with a bright edge below it, rolling with the picture, can pass for the marker.
+- Dark picture at blanking level with a bright edge below it, rolling with the picture, is told from the marker only
+  when a pass shows the difference; through a long stretch where the true marker stays hidden it can still pass for it.
+- The render loses its last field (1/60 s): ffmpeg's fps step after separatefields drops it at the end of the stream.
 - The marker here is a broadcast test line in the vertical interval. A recording without one (a home camcorder tape, say)
   needs another landmark: the blanking interval's start, or the half line ending the field.
 

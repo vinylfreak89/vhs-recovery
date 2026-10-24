@@ -29,13 +29,13 @@ TEX = {0: smooth_texture(90), 1: smooth_texture(170)}          # the scene cut: 
 DEVICE = 200                                      # chroma label of the Shuttle's inserts
 BLANK = np.tile(np.array([128, 1], np.uint8), W)
 
-def tape_line(sc, n, k, dark_band=False):
+def tape_line(sc, n, k, dark_band=False, static=False):
     """UYVY row of tape line n (1-based) in scene sc, tape field k"""
     if n < 22: y = np.full(W, 6, np.uint8)
     elif 100 <= n < 140: y = np.full(W, 120, np.uint8)
     elif dark_band and 180 <= n < 194: y = np.full(W, 7, np.uint8)
     elif dark_band and n == 194: y = np.full(W, 160, np.uint8)
-    else: y = TEX[sc][n, 2 * (k % 200):2 * (k % 200) + W].copy()         # moves 2 samples a field
+    else: o = 0 if static and n >= 150 else 2 * (k % 200); y = TEX[sc][n, o:o + W].copy()   # moves 2 samples a field (static: below line 150 holds still)
     if n == 16: y[:] = 100; y[15:115] = 180
     r = np.empty(W * 2, np.uint8); r[1::2] = y; r[0::2] = 128
     for p in range(4): r[4 * p] = n % 256; r[4 * p + 2] = 100 + n // 256
@@ -44,7 +44,7 @@ def tape_line(sc, n, k, dark_band=False):
 def noisy(f, amp=3):
     f = f.copy(); f[:, 1::2] = np.clip(f[:, 1::2].astype(int) + rng.integers(-amp, amp + 1, (len(f), W)), 0, 255).astype(np.uint8); return f
 
-def simulate(plan, cut_field=10 ** 9, dark_fields=(), partial_after=5):
+def simulate(plan, cut_field=10 ** 9, dark_fields=(), partial_after=5, static=False):
     """plan: list of ('lock'|'roll', passes). Returns published fields (240 rows, slots 20..259), per field (tape marker
     slot or None, repeat?), and the index of the partial repeat (None if none)."""
     lines = []                                    # (tape field, line) in tape order
@@ -56,7 +56,7 @@ def simulate(plan, cut_field=10 ** 9, dark_fields=(), partial_after=5):
         for i, s in enumerate(range(20, 260)):
             if s in (20, 21): f[i] = DEVICE; f[i, 1::2] = rng.integers(16, 235, W)
             elif s >= 258 or s > len(pl): f[i] = BLANK
-            else: k, n = pl[s - 1]; f[i] = tape_line(1 if k >= cut_field else 0, n, k, k in dark_fields)
+            else: k, n = pl[s - 1]; f[i] = tape_line(1 if k >= cut_field else 0, n, k, k in dark_fields, static)
         return noisy(f)
     def mark(pl): return next((s for s, (_, ln) in enumerate(pl, 1) if ln == 16), None)
     for mode, count in plan:
@@ -95,7 +95,8 @@ def score(of, truth, partial, only=None):
     for g, (mk, rep) in enumerate(truth):
         if only is not None and g not in only: continue
         if rep:
-            assert np.array_equal(of[g], of[g - 1]), 'field %d: a repeat did not repeat the output' % g; continue
+            # a repeat shows the same picture in the same place: held (rolling), or shown as itself (locked)
+            assert [label(r) for r in of[g]] == [label(r) for r in of[g - 1]], 'field %d: a repeat moved the picture' % g; continue
         seen = mk is not None and 30 <= mk <= 256
         for i in range(240):
             o = 22 + i; lb = label(of[g][i])
@@ -159,7 +160,23 @@ assert wr == 0 and o1 == 0, ('a dark band moved the picture', bd[:5])
 assert st.tr.ignored > 0, 'the dark band was never seen as a marker: the test does not test anything'
 print('dark band in a still picture: seen %d times, not followed' % st.tr.ignored)
 
-# 5. a frame cut short is refused, never padded
+# 5. the same dark band rolling with the picture, the marker often in view too: the marker is followed, not the band
+f, tr, _ = simulate([('lock', 6), ('roll', 60)], dark_fields=set(range(600)), partial_after=None)
+of4, st = run_inproc(f)
+e, o1, wr, bl, fb, bd = score(of4, tr, None)
+print('dark band rolling with the picture: %d rows exact, %d one line off, %d wrong' % (e, o1, wr))
+assert wr == 0, ('the rolling dark band was followed', bd[:5])
+
+# 6. locked, the lower part of the picture holding still: not taken for a repeat, nothing blacked out
+f, tr, _ = simulate([('lock', 30)], partial_after=None, static=True)
+of5, _ = run_inproc(f)
+e, o1, wr, bl, fb, bd = score(of5, tr, None)
+assert wr == 0 and o1 == 0, bd[:5]
+blk = max(sum(label(of5[g][i]) is None for i in range(240)) for g in range(len(f)))
+assert blk <= 4, '%d picture rows blacked out in a locked field (only the 4 blanked slots 258-261 may be)' % blk
+print('locked picture with a still lower part: all rows in place')
+
+# 7. a frame cut short is refused, never padded
 r = subprocess.run([sys.executable, VSTAB], input=frames_of(fields[:4]) + b'\0' * 1000, capture_output=True)
 assert r.returncode != 0 and b'inside a frame' in r.stderr, r.stderr
 print('ALL OK')

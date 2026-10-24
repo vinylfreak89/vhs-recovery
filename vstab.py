@@ -116,10 +116,11 @@ def near(dets, p): return min(min(abs(x - p), abs(x - p + 262.5), abs(x - p - 26
 RANK = dict(relock=0, cont=1, marker=2, cut=3)   # undecided after PENDING passes with equal scores: the likelier story first
 
 def seeable(m, fresh):
-    """the detector could see a marker at slot m in this pass: in its range, with it and its blanking delivered fresh"""
+    """the detector could see a marker at slot m in this pass: in its range, with it and the blanking above and below it
+    (as markers() reads them) delivered fresh"""
     if not VISIBLE[0] <= m <= VISIBLE[1]: return False
     k = int(round(m)) - 20
-    return bool(fresh[max(0, k - DARK_RUN):k + 1].all())
+    return bool(fresh[max(0, k - DARK_RUN):min(len(fresh), k + 1 + AFTER)].all())
 
 class Tracker:
     """The slot of the tape's marker line in each fresh pass. Two events read alike at the pass where they happen and differ

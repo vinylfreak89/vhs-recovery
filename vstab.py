@@ -36,6 +36,8 @@ STALE_MAD = 3.0                    # a textured row this close to the previous f
 REPEAT_MIN, REPEAT_FRAC = 20, 0.9  # a repeat: >= 20 textured rows to the bottom, >= 90% of them repeated
 DARK, DARK_SD, BRIGHT, DARK_RUN = 10, 6, 20, 10   # marker: >= 10 slots of blanking (mean < 10; median deviation < 6: 0.85
                                    # measured, 4-8 on a few noisy rolling fields), then a row > 20
+AFTER = 5                          # ... and blanking again within 5 slots below it (the tape's lines 17-21; measured +4 on 402
+                                   # of 409 markers): dark picture with a bright edge is followed by picture
 VISIBLE = (30, 256)                # marker slots the detector can see (it needs 10 blanking slots at or below slot 20)
 FAR = 8                            # a marker further than this from the tracked slot is not taken on trust
 LOCK_SHIFT = 2                     # |shift| <= 2 between passes: still (the two parities differ by a line)
@@ -65,7 +67,8 @@ def stale_rows(cur, prev):
 
 def markers(field, fresh):
     """slots of marker lines: a run of >= DARK_RUN slots of blanking, then a bright one (field: slot -> UYVY row,
-    slots 20..259). Only in rows this pass delivered: a marker in repeated rows is the previous pass's."""
+    slots 20..259), then blanking again within AFTER slots below it unless the field ends first. Only in rows this pass
+    delivered: a marker in repeated rows is the previous pass's."""
     y = field[:, 1::2].astype(np.float32)
     mean = {s: float(y[s - FIRST].mean()) for s in range(20, 258)}; sd = {s: float(y[s - FIRST].std()) for s in range(20, 258)}
     out = []; s = 20
@@ -73,8 +76,10 @@ def markers(field, fresh):
         if mean[s] < DARK:
             e = s
             while e < 257 and mean[e] < DARK: e += 1
+            below = range(e + 1, e + 1 + AFTER)
             if (e - s >= DARK_RUN and e < 257 and mean[e] > BRIGHT and np.median([sd[x] for x in range(s, e)]) < DARK_SD
-                    and fresh[s - 20:e - 19].all()): out.append(e)
+                    and fresh[s - 20:e - 19].all()
+                    and (below[-1] > 257 or any(mean[x] < DARK and fresh[x - 20] for x in below))): out.append(e)
             s = e
         else: s += 1
     return out

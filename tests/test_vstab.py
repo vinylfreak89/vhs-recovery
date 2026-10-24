@@ -29,12 +29,14 @@ TEX = {0: smooth_texture(90), 1: smooth_texture(170)}          # the scene cut: 
 DEVICE = 200                                      # chroma label of the Shuttle's inserts
 BLANK = np.tile(np.array([128, 1], np.uint8), W)
 
-def tape_line(sc, n, k, dark_band=False, static=False):
+def tape_line(sc, n, k, dark_band=False, static=False, spoil=False):
     """UYVY row of tape line n (1-based) in scene sc, tape field k"""
-    if n < 22: y = np.full(W, 6, np.uint8)
+    if spoil and 4 <= n < 16: y = np.clip(rng.normal(4, 9, W), 0, 255).astype(np.uint8)   # blanking the detector cannot read
+    elif n < 22: y = np.full(W, 6, np.uint8)
     elif 100 <= n < 140: y = np.full(W, 120, np.uint8)
     elif dark_band and 180 <= n < 194: y = np.full(W, 7, np.uint8)
     elif dark_band and n == 194: y = np.full(W, 160, np.uint8)
+    elif dark_band == 'clone' and 195 <= n < 199: y = np.full(W, 7, np.uint8)   # blanking after its edge too, as the marker
     else: o = 0 if static and n >= 150 else 2 * (k % 200); y = TEX[sc][n, o:o + W].copy()   # moves 2 samples a field (static: below line 150 holds still)
     if n == 16: y[:] = 100; y[15:115] = 180
     r = np.empty(W * 2, np.uint8); r[1::2] = y; r[0::2] = 128
@@ -44,7 +46,7 @@ def tape_line(sc, n, k, dark_band=False, static=False):
 def noisy(f, amp=3):
     f = f.copy(); f[:, 1::2] = np.clip(f[:, 1::2].astype(int) + rng.integers(-amp, amp + 1, (len(f), W)), 0, 255).astype(np.uint8); return f
 
-def simulate(plan, cut_field=10 ** 9, dark_fields=(), partial_after=5, static=False):
+def simulate(plan, cut_field=10 ** 9, dark_fields=(), partial_after=5, static=False, spoil=(), band='edge'):
     """plan: list of ('lock'|'roll', passes). Returns published fields (240 rows, slots 20..259), per field (tape marker
     slot or None, repeat?), and the index of the partial repeat (None if none)."""
     lines = []                                    # (tape field, line) in tape order
@@ -56,7 +58,7 @@ def simulate(plan, cut_field=10 ** 9, dark_fields=(), partial_after=5, static=Fa
         for i, s in enumerate(range(20, 260)):
             if s in (20, 21): f[i] = DEVICE; f[i, 1::2] = rng.integers(16, 235, W)
             elif s >= 258 or s > len(pl): f[i] = BLANK
-            else: k, n = pl[s - 1]; f[i] = tape_line(1 if k >= cut_field else 0, n, k, k in dark_fields, static)
+            else: k, n = pl[s - 1]; f[i] = tape_line(1 if k >= cut_field else 0, n, k, band if k in dark_fields else False, static, k in spoil)
         return noisy(f)
     def mark(pl): return next((s for s, (_, ln) in enumerate(pl, 1) if ln == 16), None)
     for mode, count in plan:
@@ -152,20 +154,29 @@ for n in range(1, 40):
 print('relock after rolls of 1-39 passes: %d misplaced' % len(fails))
 assert not fails, fails
 
-# 4. a dark band that looks like blanking, in a still (locked) picture: not followed
-f, tr, _ = simulate([('lock', 40)], dark_fields=set(range(600)), partial_after=None)
+# 4. a dark band that looks just like the blanking (the marker's clone), in a still (locked) picture: not followed
+f, tr, _ = simulate([('lock', 40)], dark_fields=set(range(600)), partial_after=None, band='clone')
 of3, st = run_inproc(f)
 e, o1, wr, bl, fb, bd = score(of3, tr, None)
 assert wr == 0 and o1 == 0, ('a dark band moved the picture', bd[:5])
 assert st.tr.ignored > 0, 'the dark band was never seen as a marker: the test does not test anything'
 print('dark band in a still picture: seen %d times, not followed' % st.tr.ignored)
 
-# 5. the same dark band rolling with the picture, the marker often in view too: the marker is followed, not the band
-f, tr, _ = simulate([('lock', 6), ('roll', 60)], dark_fields=set(range(600)), partial_after=None)
+# 5. the clone rolling with the picture, the marker often in view too: the marker is followed, not the band
+f, tr, _ = simulate([('lock', 6), ('roll', 60)], dark_fields=set(range(600)), partial_after=None, band='clone')
 of4, st = run_inproc(f)
 e, o1, wr, bl, fb, bd = score(of4, tr, None)
 print('dark band rolling with the picture: %d rows exact, %d one line off, %d wrong' % (e, o1, wr))
 assert wr == 0, ('the rolling dark band was followed', bd[:5])
+# ... and when one field's blanking cannot be read, so for one pass only the band could be seen: a band followed by picture
+# is not taken for a marker at all (a clone of the blanking would be indistinguishable there: a README limit)
+bad_after = []
+for k in (15, 25, 26, 36):
+    f, tr, _ = simulate([('lock', 6), ('roll', 60)], dark_fields=set(range(600)), partial_after=None, spoil={k}, band='edge')
+    of4, st = run_inproc(f)
+    e, o1, wr, bl, fb, bd = score(of4, tr, None)
+    if wr: bad_after.append((k, len({b[0] for b in bd})))
+assert not bad_after, ('a missed marker handed the track to the dark band (tape field, fields misplaced)', bad_after)
 
 # 6. locked, the lower part of the picture holding still: not taken for a repeat, nothing blacked out
 f, tr, _ = simulate([('lock', 30)], partial_after=None, static=True)

@@ -37,8 +37,10 @@ python3 recovery/tests/test_vstab.py              # known-answer tests on a simu
   (sky, a wall, a fade) matches the previous field within noise either way. Repeated fields repeat the output; repeated
   rows of a partly new field show black. While locked, a field that matches the last is a still picture and is shown as
   it is.
-- **The marker:** at least 10 rows at blanking level (mean under 10, median deviation under 6), then a brighter row, all in
-  rows this pass delivered. Where it is visible it decides the position, exactly.
+- **The marker:** at least 10 rows at blanking level (mean under 10, median deviation under 6), then a brighter row, then
+  blanking again within 5 rows (the tape's lines 17-21; on the capture, 4 rows below in 402 of 409 markers), all in rows
+  this pass delivered. Dark picture with a bright edge is followed by picture, not blanking. Where the marker is visible
+  it decides the position, exactly.
 - **Elsewhere:** the position follows the measured shift of the picture between passes: still, rolling, or a jump when the
   synchroniser re-catches sync.
 - **Two events that read alike at the pass where they happen:**
@@ -65,8 +67,9 @@ corrections: a marker the prototype read from repeated rows, and a relock it too
 - Where the marker is hidden, a pass moves 27.5 lines and the half line is not observable: the position is good to a line.
 - Each output field joins the tape's field with the end of the previous one across the missing band. The part below the band
   can sit a line off, as that field's parity is not known.
-- Dark picture at blanking level with a bright edge below it, rolling with the picture, is told from the marker only
-  when a pass shows the difference; through a long stretch where the true marker stays hidden it can still pass for it.
+- Dark picture shaped exactly like the blanking (blanking-level rows, a bright row, blanking-level rows again), rolling
+  with the picture, is told from the marker only when a pass shows the difference. If the true marker is unreadable in
+  the pass where such a band is seen, the band is followed.
 - The render loses its last field (1/60 s): ffmpeg's fps step after separatefields drops it at the end of the stream.
 - The marker here is a broadcast test line in the vertical interval. A recording without one (a home camcorder tape, say)
   needs another landmark: the blanking interval's start, or the half line ending the field.
